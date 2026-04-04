@@ -13,6 +13,7 @@ const app = express();
 const PORT = Number(process.env.PORT || 5000);
 const JWT_SECRET = process.env.JWT_SECRET || "change-this-jwt-secret";
 const RESET_CODE_TTL_MINUTES = Number(process.env.RESET_CODE_TTL_MINUTES || 15);
+const FIXED_SUPER_ADMIN_EMAIL = "feroz.alam4103@gmail.com";
 const CLIENT_ORIGINS = [
   process.env.CLIENT_ORIGIN,
   "http://localhost:5173",
@@ -70,6 +71,7 @@ const missingDatabaseConfigMessage =
 
 let poolPromise = null;
 let userColumnsEnsured = false;
+let adminInvitationsEnsured = false;
 let studentsTableEnsured = false;
 let publicRoomShowcaseEnsured = false;
 const STUDENT_TABLE = "Students";
@@ -128,9 +130,65 @@ const ensureUserColumns = async () => {
     BEGIN
       ALTER TABLE Users ADD passwordResetExpiresAt DATETIME NULL;
     END;
+
+    IF COL_LENGTH('Users', 'Role') IS NULL
+    BEGIN
+      ALTER TABLE Users ADD Role NVARCHAR(20) NOT NULL CONSTRAINT DF_Users_Role DEFAULT 'Admin';
+    END;
+
+    UPDATE Users
+    SET Role = 'Admin'
+    WHERE Role IS NULL;
+
+    IF NOT EXISTS (
+      SELECT 1
+      FROM sys.check_constraints
+      WHERE name = 'CK_Users_Role'
+        AND parent_object_id = OBJECT_ID('dbo.Users')
+    )
+    BEGIN
+      ALTER TABLE Users
+      ADD CONSTRAINT CK_Users_Role CHECK (Role IN ('Admin', 'SuperAdmin'));
+    END;
   `);
 
   userColumnsEnsured = true;
+};
+
+const ensureAdminInvitationsTable = async () => {
+  if (adminInvitationsEnsured) {
+    return;
+  }
+
+  const pool = await getPool();
+
+  await pool.request().query(`
+    IF OBJECT_ID('dbo.AdminInvitations', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.AdminInvitations (
+        Id INT IDENTITY(1,1) NOT NULL,
+        Email NVARCHAR(100) NOT NULL,
+        Token NVARCHAR(128) NOT NULL,
+        CreatedAt DATETIME NOT NULL CONSTRAINT DF_AdminInvitations_CreatedAt DEFAULT GETDATE(),
+        IsUsed BIT NOT NULL CONSTRAINT DF_AdminInvitations_IsUsed DEFAULT 0,
+        CONSTRAINT PK_AdminInvitations PRIMARY KEY (Id),
+        CONSTRAINT UQ_AdminInvitations_Token UNIQUE (Token)
+      );
+    END;
+
+    IF NOT EXISTS (
+      SELECT 1
+      FROM sys.indexes
+      WHERE object_id = OBJECT_ID('dbo.AdminInvitations')
+        AND name = 'IX_AdminInvitations_Email_IsUsed'
+    )
+    BEGIN
+      CREATE INDEX IX_AdminInvitations_Email_IsUsed
+      ON dbo.AdminInvitations (Email, IsUsed);
+    END;
+  `);
+
+  adminInvitationsEnsured = true;
 };
 
 const ensureStudentsTable = async () => {
@@ -1132,6 +1190,15 @@ const getDisplayName = (email) =>
 
 const getUserName = (user) => normalizeString(user.fullName) || getDisplayName(user.email);
 const getStudentName = (student) => normalizeString(student.Name || student.name);
+const getAdminRole = (user) => {
+  const normalizedEmail = normalizeString(user.email).toLowerCase();
+  if (normalizedEmail === FIXED_SUPER_ADMIN_EMAIL) {
+    return "SuperAdmin";
+  }
+
+  const role = normalizeString(user.Role ?? user.role);
+  return role === "SuperAdmin" ? "SuperAdmin" : "Admin";
+};
 
 const hashResetCode = (code) =>
   crypto.createHash("sha256").update(code).digest("hex");
@@ -1204,13 +1271,57 @@ const sendResetEmail = async ({ email, code, expiresAt }) => {
   };
 };
 
+const sendAdminInviteEmail = async ({ email, token }) => {
+  const transport = createMailTransport();
+  const registrationUrl = `http://localhost:5173/admin/register?token=${token}`;
+
+  if (!transport) {
+    return {
+      delivered: false,
+      previewOnly: true,
+      registrationUrl,
+    };
+  }
+
+  await transport.sendMail({
+    from: process.env.MAIL_FROM || process.env.SMTP_USER,
+    to: email,
+    subject: "You're invited to join HostelMS as an admin",
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px;">
+        <h2 style="margin-bottom: 12px; color: #1E3A5F;">Admin invitation</h2>
+        <p style="color: #334155; line-height: 1.6;">
+          A Super Admin invited you to create a HostelMS admin account.
+        </p>
+        <p style="margin: 24px 0;">
+          <a
+            href="${registrationUrl}"
+            style="display: inline-block; padding: 12px 20px; border-radius: 10px; background: #1D4ED8; color: #FFFFFF; text-decoration: none; font-weight: 700;"
+          >
+            Complete Admin Registration
+          </a>
+        </p>
+        <p style="color: #475569; line-height: 1.6; word-break: break-all;">
+          If the button does not work, use this link:<br />${registrationUrl}
+        </p>
+      </div>
+    `,
+  });
+
+  return {
+    delivered: true,
+    previewOnly: false,
+    registrationUrl,
+  };
+};
+
 const buildAuthPayload = (user) => {
   const normalizedUser = {
     id: user.id,
     email: user.email,
     name: getUserName(user),
     phoneNumber: user.phoneNumber || null,
-    role: "Admin",
+    role: getAdminRole(user),
   };
 
   const token = jwt.sign(
@@ -1272,7 +1383,14 @@ const authenticateToken = (req, res, next) => {
 const authorizeRoles =
   (...allowedRoles) =>
   (req, res, next) => {
-    if (!allowedRoles.includes(req.user?.role)) {
+    const userRole = req.user?.role;
+    const userEmail = normalizeString(req.user?.email).toLowerCase();
+    const hasAccess =
+      allowedRoles.includes(userRole) ||
+      (userRole === "SuperAdmin" && allowedRoles.includes("Admin")) ||
+      (userEmail === FIXED_SUPER_ADMIN_EMAIL && allowedRoles.includes("SuperAdmin"));
+
+    if (!hasAccess) {
       res.status(403).json({ message: "You do not have access to this resource." });
       return;
     }
@@ -1286,6 +1404,7 @@ const validatePhoneNumber = (phoneNumber) => /^\+?[\d\s()-]{7,20}$/.test(phoneNu
 const registerUser = async (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
   const password = String(req.body.password || "");
+  const inviteToken = String(req.body.token || "").trim();
 
   if (!validateEmail(email)) {
     res.status(400).json({ message: "Please enter a valid email address." });
@@ -1298,6 +1417,7 @@ const registerUser = async (req, res) => {
   }
 
   await ensureUserColumns();
+  await ensureAdminInvitationsTable();
 
   const pool = await getPool();
   const existingUser = await queryOne(
@@ -1310,6 +1430,29 @@ const registerUser = async (req, res) => {
     return;
   }
 
+  if (!inviteToken) {
+    res.status(400).json({ message: "A valid admin invitation token is required." });
+    return;
+  }
+
+  const invitation = await queryOne(
+    `
+      SELECT TOP 1 Id, Email, Token, IsUsed
+      FROM AdminInvitations
+      WHERE Token = @token
+        AND Email = @email
+    `,
+    (request) =>
+      request
+        .input("token", sql.NVarChar(128), inviteToken)
+        .input("email", sql.NVarChar(100), email)
+  );
+
+  if (!invitation || invitation.IsUsed) {
+    res.status(400).json({ message: "This admin invitation is invalid or has already been used." });
+    return;
+  }
+
   const passwordHash = await bcrypt.hash(password, 10);
   const fullName = getDisplayName(email); 
   const insertResult = await pool
@@ -1317,28 +1460,38 @@ const registerUser = async (req, res) => {
     .input("email", sql.NVarChar, email)
     .input("passwordHash", sql.NVarChar, passwordHash)
     .input("fullName", sql.NVarChar(120), fullName)
+    .input("role", sql.NVarChar(20), "Admin")
     .query(`
-      INSERT INTO Users (email, passwordHash, fullName)
-      OUTPUT INSERTED.id, INSERTED.email, INSERTED.fullName, INSERTED.phoneNumber
-      VALUES (@email, @passwordHash, @fullName);
+      INSERT INTO Users (email, passwordHash, fullName, Role)
+      OUTPUT INSERTED.id, INSERTED.email, INSERTED.fullName, INSERTED.phoneNumber, INSERTED.Role AS role
+      VALUES (@email, @passwordHash, @fullName, @role);
     `);
 
   const createdUser = insertResult.recordset[0];
-  const { token, user } = buildAuthPayload(createdUser);
+  const { token: authToken, user } = buildAuthPayload(createdUser);
 
   await pool
     .request()
     .input("id", sql.Int, createdUser.id)
-    .input("token", sql.NVarChar(500), token)
+    .input("token", sql.NVarChar(500), authToken)
     .query(`
       UPDATE Users
       SET jwtToken = @token, lastLogin = GETDATE()
       WHERE id = @id;
     `);
 
+  await pool
+    .request()
+    .input("id", sql.Int, invitation.Id)
+    .query(`
+      UPDATE AdminInvitations
+      SET IsUsed = 1
+      WHERE Id = @id;
+    `);
+
   res.status(201).json({
     message: "Registration successful.",
-    token,
+    token: authToken,
     user,
   });
 };
@@ -1356,7 +1509,17 @@ const loginUser = async (req, res) => {
 
   const pool = await getPool();
   const userRecord = await queryOne(
-    "SELECT * FROM Users WHERE email = @email",
+    `
+      SELECT
+        id,
+        email,
+        fullName,
+        phoneNumber,
+        Role AS role,
+        passwordHash
+      FROM Users
+      WHERE email = @email
+    `,
     (request) => request.input("email", sql.NVarChar, email)
   );
 
@@ -1372,7 +1535,19 @@ const loginUser = async (req, res) => {
     return;
   }
 
-  const { token, user } = buildAuthPayload(userRecord);
+  const resolvedRole = getAdminRole(userRecord);
+  const user = {
+    id: userRecord.id,
+    email: userRecord.email,
+    name: getUserName(userRecord),
+    phoneNumber: userRecord.phoneNumber || null,
+    role: resolvedRole,
+  };
+  const token = jwt.sign(
+    { id: user.id, email: user.email, role: resolvedRole },
+    JWT_SECRET,
+    { expiresIn: "2h" }
+  );
 
   await pool
     .request()
@@ -1527,7 +1702,7 @@ const authMe = async (req, res) => {
 
   const currentUser = await queryOne(
     `
-      SELECT id, email, fullName, phoneNumber, lastLogin
+      SELECT id, email, fullName, phoneNumber, lastLogin, Role AS role
       FROM Users
       WHERE id = @id
     `,
@@ -1544,7 +1719,7 @@ const authMe = async (req, res) => {
     email: currentUser.email,
     name: getUserName(currentUser),
     phoneNumber: currentUser.phoneNumber || null,
-    role: "Admin",
+    role: getAdminRole(currentUser),
     lastLogin: currentUser.lastLogin,
   });
 };
@@ -1581,7 +1756,7 @@ const updateProfile = async (req, res) => {
 
   const updatedUser = await queryOne(
     `
-      SELECT id, email, fullName, phoneNumber, lastLogin
+      SELECT id, email, fullName, phoneNumber, lastLogin, Role AS role
       FROM Users
       WHERE id = @id
     `,
@@ -1593,9 +1768,54 @@ const updateProfile = async (req, res) => {
     email: updatedUser.email,
     name: getUserName(updatedUser),
     phoneNumber: updatedUser.phoneNumber || null,
-    role: "Admin",
+    role: getAdminRole(updatedUser),
     lastLogin: updatedUser.lastLogin,
     message: "Profile updated successfully.",
+  });
+};
+
+const inviteAdmin = async (req, res) => {
+  const email = String(req.body.email || "").trim().toLowerCase();
+
+  if (!validateEmail(email)) {
+    res.status(400).json({ message: "Please enter a valid email address." });
+    return;
+  }
+
+  await ensureUserColumns();
+  await ensureAdminInvitationsTable();
+
+  const existingUser = await queryOne(
+    "SELECT id FROM Users WHERE email = @email",
+    (request) => request.input("email", sql.NVarChar(100), email)
+  );
+
+  if (existingUser) {
+    res.status(409).json({ message: "An admin account with this email already exists." });
+    return;
+  }
+
+  const token = crypto.randomBytes(32).toString("hex");
+  const pool = await getPool();
+
+  await pool
+    .request()
+    .input("email", sql.NVarChar(100), email)
+    .input("token", sql.NVarChar(128), token)
+    .query(`
+      INSERT INTO AdminInvitations (Email, Token)
+      VALUES (@email, @token);
+    `);
+
+  const emailResult = await sendAdminInviteEmail({ email, token });
+
+  res.status(201).json({
+    message: emailResult.delivered
+      ? "Admin invitation sent successfully."
+      : "Invitation created. Configure SMTP to deliver emails automatically.",
+    email,
+    invitationSent: emailResult.delivered,
+    registrationUrl: emailResult.previewOnly ? emailResult.registrationUrl : undefined,
   });
 };
 
@@ -2120,6 +2340,89 @@ protectedRouter.get(
       ...summary,
       lastUpdatedAt: new Date().toISOString(),
     });
+  })
+);
+
+protectedRouter.post(
+  "/admin/invite",
+  authorizeRoles("SuperAdmin"),
+  asyncHandler(inviteAdmin)
+);
+
+protectedRouter.get(
+  "/admins",
+  authorizeRoles("SuperAdmin"),
+  asyncHandler(async (req, res) => {
+    await ensureUserColumns();
+
+    const rows = await queryRows(
+      `
+        SELECT
+          id,
+          email,
+          ISNULL(fullName, '') AS fullName,
+          ISNULL(phoneNumber, '') AS phoneNumber,
+          Role AS role,
+          createdAt,
+          lastLogin
+        FROM Users
+        WHERE Role = 'Admin'
+        ORDER BY createdAt DESC, id DESC
+      `
+    );
+
+    res.json(
+      rows.map((row) => ({
+        id: row.id,
+        email: row.email,
+        name: row.fullName || getDisplayName(row.email),
+        phoneNumber: row.phoneNumber || null,
+        role: row.role,
+        createdAt: row.createdAt,
+        lastLogin: row.lastLogin,
+      }))
+    );
+  })
+);
+
+protectedRouter.delete(
+  "/admins/:id",
+  authorizeRoles("SuperAdmin"),
+  asyncHandler(async (req, res) => {
+    await ensureUserColumns();
+
+    const adminId = parsePositiveInt(req.params.id);
+
+    if (!adminId) {
+      res.status(400).json({ message: "A valid admin ID is required." });
+      return;
+    }
+
+    const existingAdmin = await queryOne(
+      `
+        SELECT id, email, Role AS role
+        FROM Users
+        WHERE id = @id
+      `,
+      (request) => request.input("id", sql.Int, adminId)
+    );
+
+    if (!existingAdmin) {
+      res.status(404).json({ message: "Admin account not found." });
+      return;
+    }
+
+    if (getAdminRole(existingAdmin) !== "Admin") {
+      res.status(403).json({ message: "Only standard admin accounts can be removed here." });
+      return;
+    }
+
+    await executeQuery(
+      "DELETE FROM Users WHERE id = @id",
+      (request) => request.input("id", sql.Int, adminId)
+    );
+
+    res.json({ message: "Admin account removed successfully." });
   })
 );
 
@@ -3600,6 +3903,7 @@ app.get(
     try {
       await getPool();
       await ensureUserColumns();
+      await ensureAdminInvitationsTable();
       await ensureStudentsTable();
       await ensurePublicRoomShowcaseTable();
 
@@ -3628,7 +3932,12 @@ app.post("/api/auth/forgot-password", asyncHandler(forgotPassword));
 app.post("/api/auth/reset-password", asyncHandler(resetPassword));
 app.get("/api/auth/me", authenticateToken, authorizeRoles("Admin"), asyncHandler(authMe));
 app.put("/api/auth/me", authenticateToken, authorizeRoles("Admin"), asyncHandler(updateProfile));
-
+app.post(
+  "/api/invite-admin",
+  authenticateToken,
+  authorizeRoles("SuperAdmin"),
+  asyncHandler(inviteAdmin)
+);
 app.post("/api/student-auth/register", asyncHandler(registerStudent));
 app.post("/api/student-auth/login", asyncHandler(loginStudent));
 app.post("/api/student-auth/forgot-password", asyncHandler(forgotStudentPassword));

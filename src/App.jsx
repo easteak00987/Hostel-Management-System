@@ -15,6 +15,7 @@ import FeeStructure from './pages/FeeStructure'
 import MessMenu from './pages/MessMenu'
 import Maintenance from './pages/Maintenance'
 import LeaveRequests from './pages/LeaveRequests'
+import Admins from './pages/Admins'
 import ProfileSettings from './pages/ProfileSettings'
 import Login from './pages/Login'
 import Register from './pages/Register'
@@ -52,6 +53,10 @@ const AppContent = () => {
         element={isAuthenticated ? <Navigate to={dashboardPath} replace /> : <Register />}
       />
       <Route
+        path="/admin/register"
+        element={isAuthenticated ? <Navigate to={dashboardPath} replace /> : <Register />}
+      />
+      <Route
         path="/forgot-password"
         element={isAuthenticated ? <Navigate to={dashboardPath} replace /> : <ForgotPassword />}
       />
@@ -76,7 +81,7 @@ const AppContent = () => {
         element={isAuthenticated ? <Navigate to={dashboardPath} replace /> : <StudentResetPassword />}
       />
 
-      <Route element={<ProtectedRoute allowedRoles={['Admin']} loginPath="/login" />}>
+      <Route element={<ProtectedRoute allowedRoles={['Admin', 'SuperAdmin']} loginPath="/login" />}>
         <Route path="/admin" element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="dashboard" element={<Navigate to="/admin" replace />} />
@@ -89,6 +94,7 @@ const AppContent = () => {
           <Route path="mess" element={<MessMenu />} />
           <Route path="maintenance" element={<Maintenance />} />
           <Route path="leaves" element={<LeaveRequests />} />
+          <Route path="admins" element={<Admins />} />
           <Route path="profile" element={<ProfileSettings />} />
         </Route>
 

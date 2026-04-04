@@ -10,6 +10,7 @@ import {
   Utensils,
   Wrench,
   CalendarDays,
+  ShieldCheck,
   UserCog,
   X,
   Home
@@ -37,7 +38,11 @@ const studentNavItems = [
 const Sidebar = ({ isOpen, setIsOpen }) => {
   const { user } = useAuth()
   const isStudent = user?.role === 'Student'
-  const navItems = isStudent ? studentNavItems : adminNavItems
+  const navItems = isStudent
+    ? studentNavItems
+    : user?.role === 'SuperAdmin'
+      ? [...adminNavItems, { path: '/admin/admins', label: 'Admins', icon: ShieldCheck }]
+      : adminNavItems
 
   return (
     <>

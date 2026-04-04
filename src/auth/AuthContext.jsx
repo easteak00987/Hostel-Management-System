@@ -3,7 +3,11 @@ import api, { STORAGE_KEYS, clearStoredSession } from '../services/api'
 
 const AuthContext = createContext(null)
 
-const normalizeRole = (role) => role === 'Student' ? 'Student' : 'Admin'
+const normalizeRole = (role) => {
+  if (role === 'Student') return 'Student'
+  if (role === 'SuperAdmin') return 'SuperAdmin'
+  return 'Admin'
+}
 
 export const getSessionTypeForRole = (role) => normalizeRole(role) === 'Student' ? 'student' : 'admin'
 export const getLoginPathForRole = (role) => normalizeRole(role) === 'Student' ? '/student/login' : '/login'
