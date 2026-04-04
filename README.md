@@ -1,25 +1,5 @@
-# Hostel Management System - Frontend Specification
-
-## 1. Project Overview
-
-- **Project Name**: Hostel Management System
-- **Type**: Single Page Application (SPA) - Web Application
-- **Core Functionality**: A comprehensive frontend application for managing hostel operations including student records, room allocations, warden management, visitor logs, payments, mess menu, maintenance requests, and leave management.
-- **Target Users**: Hostel administrators, wardens, and students
-
-## 2. Tech Stack
-
-- **Framework**: React 18 with JSX
-- **Build Tool**: Vite
-- **Routing**: React Router DOM v6
-- **HTTP Client**: Axios
-- **Styling**: Tailwind CSS v3
-- **Icons**: Lucide React
-- **Charts**: Recharts
-- **Notifications**: React Hot Toast
-- **State Management**: React Context API
-
-## 3. Folder Structure
+# Hostel Management System
+1. Folder Structure
 
 ```
 src/
@@ -77,7 +57,7 @@ src/
 └── index.css
 ```
 
-## 4. UI/UX Specification
+## 2. UI/UX Specification
 
 ### Color Palette
 
@@ -102,7 +82,7 @@ src/
 - Text Primary: `#F1F5F9` (Slate 100)
 - Text Secondary: `#94A3B8` (Slate 400)
 
-### Typography
+### 3.Typography
 
 - **Font Family**: `'Inter', sans-serif` (Primary), `'Poppins', sans-serif` (Headings)
 - **Headings**: 
@@ -113,7 +93,7 @@ src/
 - **Body**: 14px, font-weight: 400
 - **Small**: 12px, font-weight: 400
 
-### Layout Structure
+###   4. Layout Structure
 
 - **Sidebar**: Fixed left, 260px width (desktop), collapsible on mobile
 - **Navbar**: Fixed top, 64px height
