@@ -26,6 +26,7 @@ IF OBJECT_ID('dbo.Room', 'U') IS NOT NULL DROP TABLE dbo.Room;
 IF OBJECT_ID('dbo.Hostel_Block', 'U') IS NOT NULL DROP TABLE dbo.Hostel_Block;
 IF OBJECT_ID('dbo.Fee_Structure', 'U') IS NOT NULL DROP TABLE dbo.Fee_Structure;
 IF OBJECT_ID('dbo.Mess_Menu', 'U') IS NOT NULL DROP TABLE dbo.Mess_Menu;
+IF OBJECT_ID('dbo.AdminInvitations', 'U') IS NOT NULL DROP TABLE dbo.AdminInvitations;
 IF OBJECT_ID('dbo.Users', 'U') IS NOT NULL DROP TABLE dbo.Users;
 GO
 
@@ -35,6 +36,7 @@ CREATE TABLE dbo.Users (
     email NVARCHAR(100) NOT NULL,
     fullName NVARCHAR(120) NULL,
     phoneNumber NVARCHAR(30) NULL,
+    Role NVARCHAR(20) NOT NULL CONSTRAINT DF_Users_Role DEFAULT 'Admin',
     passwordHash NVARCHAR(255) NOT NULL,
     jwtToken NVARCHAR(500) NULL,
     passwordResetCodeHash NVARCHAR(255) NULL,
@@ -42,7 +44,33 @@ CREATE TABLE dbo.Users (
     createdAt DATETIME NOT NULL CONSTRAINT DF_Users_createdAt DEFAULT GETDATE(),
     lastLogin DATETIME NULL,
     CONSTRAINT PK_Users PRIMARY KEY (id),
-    CONSTRAINT UQ_Users_email UNIQUE (email)
+    CONSTRAINT UQ_Users_email UNIQUE (email),
+    CONSTRAINT CK_Users_Role CHECK (Role IN ('Admin', 'SuperAdmin'))
+);
+GO
+
+-- ------------------ ADMIN INVITATIONS ------------------
+CREATE TABLE dbo.AdminInvitations (
+    Id INT IDENTITY(1,1) NOT NULL,
+    Email NVARCHAR(100) NOT NULL,
+    Token NVARCHAR(128) NOT NULL,
+    CreatedAt DATETIME NOT NULL CONSTRAINT DF_AdminInvitations_CreatedAt DEFAULT GETDATE(),
+    IsUsed BIT NOT NULL CONSTRAINT DF_AdminInvitations_IsUsed DEFAULT 0,
+    CONSTRAINT PK_AdminInvitations PRIMARY KEY (Id),
+    CONSTRAINT UQ_AdminInvitations_Token UNIQUE (Token)
+);
+GO
+
+CREATE INDEX IX_AdminInvitations_Email_IsUsed ON dbo.AdminInvitations (Email, IsUsed);
+GO
+
+-- ------------------ FIXED SUPER ADMIN ------------------
+INSERT INTO dbo.Users (email, fullName, Role, passwordHash)
+VALUES (
+    'feroz.alam4103@gmail.com',
+    'Super Admin',
+    'SuperAdmin',
+    '$2b$10$BMj2WlbGqsYJvOL7LqGlGe7FhR72qhjUQCcjXvVXfox0wbP.JX40i'
 );
 GO
 

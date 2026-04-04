@@ -18,7 +18,12 @@ const ProtectedRoute = ({ allowedRoles = [], loginPath = '/login' }) => {
     return <Navigate to={loginPath} state={{ from: location }} replace />
   }
 
-  if (allowedRoles.length > 0 && !allowedRoles.includes(user?.role)) {
+  const hasAllowedRole =
+    allowedRoles.length === 0 ||
+    allowedRoles.includes(user?.role) ||
+    (user?.role === 'SuperAdmin' && allowedRoles.includes('Admin'))
+
+  if (!hasAllowedRole) {
     return <Navigate to={getDashboardPathForRole(user?.role)} replace />
   }
 
